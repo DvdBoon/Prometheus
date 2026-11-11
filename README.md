@@ -25,7 +25,14 @@ Build with GNU make and vbcc in `PromLib/`:
     make clean
 
 The debug build prints its `D(...)` messages to the serial port, through
-exec's `RawPutChar`. The makefile's flags are the ones the included 4.8
+exec's `RawPutChar`.
+
+In the debug build only, the delay before each card is probed (100000
+microseconds) can be set with `ENV:Prometheus/CardDelay`, in microseconds:
+decimal (`setenv Prometheus/CardDelay 200000`) or hexadecimal with a `0x`
+or `$` prefix (`0x30D40`). It is read once when the library loads and
+printed on serial as `[LibInit] CardDelay ...`; copy it to `ENVARC:` to
+keep it. The normal build always uses 100000. The makefile's flags are the ones the included 4.8
 binary was built with. The include folders default to the Amiga assigns
 `vincludeos3:` and `include_h:`; on a PC cross setup pass them, e.g.
 `make VINC=C:/amiga-dev/targets/m68k-amigaos/include NDK=C:/amiga-dev/targets/m68k-amigaos/ndk/include_h RM="rm -f"`.
