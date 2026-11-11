@@ -1,0 +1,41 @@
+# Cross build of prm-rtl8029.device with bebbo's m68k-amigaos-gcc (gcc 6) in WSL.
+# The original makefile is for native gcc 2.95 + libnix and is left unchanged.
+#
+#   make -f makefile.cross
+#
+# driver.c is not edited for the cross compiler. Instead, cross/driver_cross.c
+# is generated from it with two gcc 2.95-isms rewritten:
+#   *##a        token pasting onto "*" (an error in gcc >= 3)  ->  *a
+#   long DevReserved(void);  (conflicts with the LONG definition) -> LONG
+# cross/faststring.h stands in for the old faststring.h (inline strcpy).
+# libraries/prometheus.h is force-included from ../promlib (driver.c uses
+# PCIBoard and PRM_* but never includes it; gcc 2.95's proto header did).
+# devices/sana2.h comes from the NDK 3.9 netinclude.
+
+PREFIX  = /home/dennis/amiga-gcc-install/bin/m68k-amigaos-
+CC      = $(PREFIX)gcc
+NETINC  = /mnt/d/NDK_39/Include/include_h/netinclude
+
+CFLAGS  = -O2 -msmall-code -fomit-frame-pointer \
+          -fno-tree-loop-distribute-patterns \
+          -Icross -I. -I$(NETINC) \
+          -include exec/types.h -include ../promlib/prometheus.h
+
+all: prm-rtl8029.device.new
+
+prm-rtl8029.device.new: cross/header.o cross/driver.o
+	$(CC) -s -nostdlib -msmall-code -o $@ cross/header.o cross/driver.o
+
+cross/driver_cross.c: driver.c
+	sed -e 's/\*##a/*a/g' \
+	    -e 's/^long DevReserved(void);/LONG DevReserved(void);/' \
+	    driver.c > $@
+
+cross/driver.o: cross/driver_cross.c ne2000.h rev.h cross/faststring.h
+	$(CC) $(CFLAGS) -c -o $@ cross/driver_cross.c
+
+cross/header.o: header.s rev.h
+	$(CC) -c -x assembler-with-cpp -o $@ header.s
+
+clean:
+	rm -f cross/driver_cross.c cross/driver.o cross/header.o prm-rtl8029.device.new

@@ -1,0 +1,47 @@
+(compiler
+
+    (alias "vbcc/classic")
+
+    (makefile "makefiles/vbcc-classic/makefile")
+
+    (make "make -f %makefile %target")
+
+    (executable "bin/vbcc-classic/PrometheusCard_vbcc")
+
+    (stack "262144")
+
+    (target "")
+
+    (options
+
+        "-cpu=68020"
+
+        "-cpp-comments"
+
+        "-c99"
+
+        "-Ivincludeos3:"
+
+        "-Iinclude_h:"
+
+        "-IBackupBench:..work/PrometheusCard/"
+
+        "-nostdlib"
+
+        "-O2"
+    )
+)
+
+(compiler
+
+    (alias "vbcc/classic")
+
+    (options
+
+        "-cpp-comments"
+
+        "-lauto"
+
+        "-lamiga"
+    )
+)

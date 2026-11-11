@@ -1,0 +1,650 @@
+--- promlib47/driver_2.c	2026-11-04 16:00:05.022242800 +0100
++++ promlib48/driver_2.c	2026-11-04 16:29:26.702657100 +0100
+@@ -1,4 +1,21 @@
+ /* 
++$VER: driver.c 4.8 (04.11.2026) by Dennis Boon
++- Prm_AllocPCIAddressSpace: for a card behind bridges, the memory window
++  of every bridge on the way is widened to include the new range (4.7
++  gave bridges only the boot-time ranges, so such a range was not
++  forwarded). A range is only taken if widening covers nothing else.
++- pci.library emulation: config read/write, FindPciClassCode,
++  FindPciDevFunc, AllocPCIBAR and FreePCIBAR implemented (were illegal
++  instructions). FindPciDevice honours the index, fills the subsystem IDs
++  and the interrupt pin, and returns one PciDevice per board that stays
++  valid. DevFunc = bus<<8 | slot<<3 | function.
++- FindConfigDev patch: a Mediator lookup finds the FireStorm, or the
++  original Prometheus when there is no FireStorm.
++- Prm_Read/WriteConfigLong/Word round the offset down to 4/2 bytes, as
++  documented.
++- Since the first 4.7 builds: bus limit 7 (FireStorm config1 decodes
++  A[19:16] only up to bus 7), and a requested window may reach the 512 MB
++  top again (a 256 MB PPC window, as in 4.6).
+ $VER: driver.c 4.7 (03.11.2026) by Dennis Boon (review fixes)
+ - Original Prometheus: memory BARs are now aligned to their size (top-down
+   allocation without alignment could place a card at a different address
+@@ -229,7 +246,7 @@
+ #define MAX_BUSNR      7      /* FireStorm config1: CPLD masks A[28:20], so only buses 1-7 work */
+ 
+ #define VERSION  4
+-#define REVISION 7
++#define REVISION 8
+ 
+ #define CARD_NAME "Picasso96/Prometheus.card"
+ 
+@@ -239,7 +256,7 @@
+ #define __DBG__
+ #endif
+ 
+-char libid[]   = "\0$VER: prometheus.library 4.7 " __DBG__ "(03.11.2026)\r\n";
++char libid[]   = "\0$VER: prometheus.library 4.8 " __DBG__ "(04.11.2026)\r\n";
+ char build[]   = "build date: " __DATE__ ", " __TIME__ "\n";
+ char libname[] = "prometheus.library\0";
+ 
+@@ -254,7 +271,6 @@
+ static const APTR PCIVectors[27];
+ APTR OldFindFunc;
+ struct PrometheusBase* myBase;
+-struct PciDevice fakeDevice;
+ 
+ /*--------------------------------------------------------------------------*/
+ 
+@@ -1816,7 +1832,7 @@
+ 
+     CacheClearU();
+     
+-    tmp = swapl( *(ULONG*)(cfgl+(ULONG)offset));
++    tmp = swapl( *(ULONG*)(cfgl+(ULONG)(offset & 0xFC)));   /* documented: rounded down to 4 */
+     
+     D(kprintf("Prm_ReadConfigLong offset 0x%lx result 0x%08lx\n", offset, tmp));
+ 	
+@@ -1871,7 +1887,7 @@
+ 	
+     CacheClearU();
+ 
+-    tmp = swapw( *(UWORD*)(cfgw+(ULONG)offset));
++    tmp = swapw( *(UWORD*)(cfgw+(ULONG)(offset & 0xFE)));   /* rounded down to 2 */
+     
+     D(kprintf("Prm_ReadConfigWord offset 0x%lx result 0x%04lx\n", offset, tmp));
+     
+@@ -1980,7 +1996,7 @@
+ 
+     D(kprintf("Prm_WriteConfigLong offset 0x%lx data 0x%08lx\n", offset, data));
+ 
+-    *(ULONG*)(cfgl+(ULONG)offset) = swapl(data);
++    *(ULONG*)(cfgl+(ULONG)(offset & 0xFC)) = swapl(data);   /* rounded down to 4 */
+ 
+     CacheClearU();
+ 
+@@ -2042,7 +2058,7 @@
+ 
+     D(kprintf("Prm_WriteConfigWord offset 0x%lx data 0x%04lx\n", offset, data));
+ 
+-    *(UWORD*)(cfgw+(ULONG)offset) = swapw(data);
++    *(UWORD*)(cfgw+(ULONG)(offset & 0xFE)) = swapw(data);   /* rounded down to 2 */
+ 
+     CacheClearU();
+ 
+@@ -2615,6 +2631,118 @@
+ *
+ */
+ 
++/* --- bridge windows for ranges allocated after boot (4.8) ---------------- */
++
++static struct PCIBus *FindBus(struct PrometheusBase *pb, UBYTE busnr)
++{
++    struct PCIBus *pbus;
++
++    ForeachNode(&pb->pb_Busses, pbus)
++    {
++        if (pbus->br_BusNr == busnr) return pbus;
++    }
++    return NULL;
++}
++
++/* TRUE if bus busnr is bus rootnr or below it */
++
++static BOOL BusInSubtree(struct PrometheusBase *pb, UBYTE busnr, UBYTE rootnr)
++{
++    struct PCIBus *pbus;
++    WORD guard;
++
++    for (guard = 0; guard < 32; guard++)
++    {
++        if (busnr == rootnr) return TRUE;
++        if (busnr == 0) return FALSE;
++        if (!(pbus = FindBus(pb, busnr))) return FALSE;
++        busnr = pbus->br_pBusNr;
++    }
++    return FALSE;
++}
++
++/* The memory window of the bridge above bus pbus, as PCI addresses, */
++/* widened to include [lo, lo+size). 1 MB granularity.                */
++
++static void WidenedWindow(struct PCIBus *pbus, ULONG lo, ULONG size, ULONG *base, ULONG *limit)
++{
++    volatile struct PciConfig *br = pbus->br_ConfigBase;
++    ULONG wb = ((ULONG)(swapw(br->types.t1.pc_MemoryBase) & 0xFFF0)) << 16;
++    ULONG wl = (((ULONG)(swapw(br->types.t1.pc_MemoryLimit) & 0xFFF0)) << 16) | 0x000FFFFF;
++    ULONG nb = lo & 0xFFF00000;
++    ULONG nl = (lo + size - 1) | 0x000FFFFF;
++
++    if (wb <= wl)                                     /* window open: keep it */
++    {
++        if (wb < nb) nb = wb;
++        if (wl > nl) nl = wl;
++    }
++    *base = nb;
++    *limit = nl;
++}
++
++/* For a range [lo, lo+size) (PCI addresses) for a card on bus pbus: 0 if  */
++/* the bridge windows on the way can be widened to include it without      */
++/* covering anything outside their own subtree, else the PCI address just  */
++/* past the first range that is in the way.                                */
++
++static ULONG BridgePathConflict(struct PrometheusBase *pb, struct PCIBus *pbus, ULONG lo, ULONG size)
++{
++    struct PCIBus *other;
++    struct SpaceReq *srq;
++    ULONG nb, nl, start;
++    WORD guard;
++
++    for (guard = 0; (guard < 32) && pbus && (pbus->br_BusNr > 0) && pbus->br_ConfigBase; guard++)
++    {
++        WidenedWindow(pbus, lo, size, &nb, &nl);
++
++        ForeachNode(&pb->pb_Busses, other)
++        {
++            if (BusInSubtree(pb, other->br_BusNr, pbus->br_BusNr)) continue;
++
++            ForeachNode(&other->br_CardRequests, srq)
++            {
++                if ((srq->sr_Type == BLOCK_INOUT) || (!srq->sr_Tag->ti_Data)) continue;
++
++                start = srq->sr_Tag->ti_Data - (ULONG)pb->pb_BaseAddr;
++                if ((start <= nl) && (start + srq->sr_Size - 1 >= nb))
++                    return start + srq->sr_Size;
++            }
++        }
++        pbus = FindBus(pb, pbus->br_pBusNr);
++    }
++    return 0;
++}
++
++static void WidenBridgePath(struct PrometheusBase *pb, struct PCIBus *pbus, ULONG lo, ULONG size)
++{
++    struct Library *SysBase = pb->pb_SysBase;
++    volatile struct PciConfig *br;
++    ULONG nb, nl;
++    WORD guard;
++
++    for (guard = 0; (guard < 32) && pbus && (pbus->br_BusNr > 0) && pbus->br_ConfigBase; guard++)
++    {
++        br = pbus->br_ConfigBase;
++        WidenedWindow(pbus, lo, size, &nb, &nl);
++
++        /* the prefetchable window follows the memory window where it is  */
++        /* open (as AssignBusFS sets it); a closed one stays closed        */
++        if ((swapw(br->types.t1.pc_PrefetchMemBase) & 0xFFF0) <= (swapw(br->types.t1.pc_PrefetchMemLimit) & 0xFFF0))
++        {
++            br->types.t1.pc_PrefetchMemBase  = swapw((nb >> 16) & 0xFFF0);
++            br->types.t1.pc_PrefetchMemLimit = swapw((nl >> 16) & 0xFFF0);
++        }
++        br->types.t1.pc_MemoryBase  = swapw((nb >> 16) & 0xFFF0);
++        br->types.t1.pc_MemoryLimit = swapw((nl >> 16) & 0xFFF0);
++        CacheClearU();
++
++        D(kprintf("[AllocPCIAddressSpace] bus %ld window now 0x%08lx-0x%08lx\n", pbus->br_BusNr, nb, nl));
++        pbus = FindBus(pb, pbus->br_pBusNr);
++    }
++}
++
+ APTR AllocPCIAddressSpace( __reg("a6") struct PrometheusBase *pb, __reg("a0") PCIBoard *board, __reg("d0") ULONG size, __reg("d1") ULONG bar)
+ {
+     ULONG memsizeTag, memaddrTag, memLower;
+@@ -2625,7 +2753,6 @@
+     struct PCIBus* curpciBus;
+     struct PCIBus* nxtpciBus;
+     struct SpaceReq* cursrq;
+-    struct SpaceReq* nxtsrq;
+ 
+     UtilityBase = pb->pb_UtilityBase;
+ 
+@@ -2645,7 +2772,8 @@
+ 
+     if ((!(memsizetagPtr->ti_Data)) && (!(memaddrtagPtr->ti_Data)))
+     {
+-        ULONG memTop;
++        ULONG memTop, past;
++        WORD tries;
+ 
+         if (pb->pb_FireStorm == TRUE)
+         {
+@@ -2666,46 +2794,64 @@
+         }
+         memLower = (memLower + size - 1) & (-size);
+ 
+-        curpciBus = NULL;
+-        ForeachNode(&pb->pb_Busses, nxtpciBus)
+-        {
+-            if (nxtpciBus->br_BusNr == pcibustagPtr->ti_Data) curpciBus = nxtpciBus;
+-        }
++        curpciBus = FindBus(pb, (UBYTE)pcibustagPtr->ti_Data);
+         if (!curpciBus) return NULL;
+ 
+-        /* Check against the requests of all busses, not just this card's   */
+-        /* bus: cards behind bridges share the same PCI memory space.        */
+-        nxtpciBus = (struct PCIBus*)pb->pb_Busses.lh_Head;
+-        while (nxtpciBus->br_Node.ln_Succ)
++        for (tries = 0; tries < 64; tries++)
+         {
+-            BOOL moved = FALSE;
+-
+-            ForeachNode(&nxtpciBus->br_CardRequests, cursrq)
++            /* Check against the requests of all busses, not just this card's   */
++            /* bus: cards behind bridges share the same PCI memory space.        */
++            nxtpciBus = (struct PCIBus*)pb->pb_Busses.lh_Head;
++            while (nxtpciBus->br_Node.ln_Succ)
+             {
+-                ULONG start = cursrq->sr_Tag->ti_Data;
++                BOOL moved = FALSE;
+ 
+-                if ((cursrq->sr_Type == BLOCK_INOUT) || (!start)) continue;   /* I/O or never mapped */
++                ForeachNode(&nxtpciBus->br_CardRequests, cursrq)
++                {
++                    ULONG start = cursrq->sr_Tag->ti_Data;
++
++                    if ((cursrq->sr_Type == BLOCK_INOUT) || (!start)) continue;   /* I/O or never mapped */
++
++                    if (((memLower <= start) && (start < (memLower + size))) ||
++                        ((start <= memLower) && (memLower < (start + cursrq->sr_Size))))
++                    {
++                        memLower = (start + cursrq->sr_Size + size - 1) & (-size);
++                        moved = TRUE;
++                        break;
++                    }
++                }
+ 
+-                if (((memLower <= start) && (start < (memLower + size))) ||
+-                    ((start <= memLower) && (memLower < (start + cursrq->sr_Size))))
++                if ((memLower < (ULONG)pb->pb_BaseAddr) || (memLower + size > memTop) || (memLower + size < memLower))
+                 {
+-                    memLower = (start + cursrq->sr_Size + size - 1) & (-size);
+-                    moved = TRUE;
++                    memLower = 0;
+                     break;
+                 }
++
++                if (moved) nxtpciBus = (struct PCIBus*)pb->pb_Busses.lh_Head;   /* start over */
++                else nxtpciBus = (struct PCIBus*)nxtpciBus->br_Node.ln_Succ;
+             }
+ 
++            /* A card behind bridges: the bridge windows on the way must be */
++            /* widened to the new range without covering anything else.     */
++            if ((!memLower) || (pb->pb_FireStorm == FALSE) || (curpciBus->br_BusNr == 0)) break;
++
++            past = BridgePathConflict(pb, curpciBus, memLower - (ULONG)pb->pb_BaseAddr, size);
++            if (!past) break;
++
++            memLower = ((ULONG)pb->pb_BaseAddr + past + size - 1) & (-size);
+             if ((memLower < (ULONG)pb->pb_BaseAddr) || (memLower + size > memTop) || (memLower + size < memLower))
+             {
+                 memLower = 0;
+                 break;
+             }
+-
+-            if (moved) nxtpciBus = (struct PCIBus*)pb->pb_Busses.lh_Head;   /* start over */
+-            else nxtpciBus = (struct PCIBus*)nxtpciBus->br_Node.ln_Succ;
+         }
++        if (tries >= 64) memLower = 0;
++
+         if (memLower)
+         {
++            if ((pb->pb_FireStorm == TRUE) && (curpciBus->br_BusNr > 0))
++                WidenBridgePath(pb, curpciBus, memLower - (ULONG)pb->pb_BaseAddr, size);
++
+             memsizetagPtr->ti_Data = size;
+             memaddrtagPtr->ti_Data = memLower;
+             AddRequest(pb, curpciBus, size, BLOCK_USRMEM, memaddrtagPtr, NULL, 0);
+@@ -2815,10 +2961,19 @@
+ 
+ {
+     APTR (*FCD_ptr)(__reg("a0") const struct ConfigDev*, __reg("d0") LONG man, __reg("d1") LONG prod, __reg("a6") struct Library* ExpansionBase) = OldFindFunc;
++    APTR cd;
++
+     if ((man == 0x89e) && (prod == 63))
+     {
+-      man = 0x0e3b;
+-      prod = 0xc8;
++      /* A Mediator lookup finds the FireStorm first, then the original */
++      /* Prometheus (Matay, 0xAD47/1) when there is no FireStorm.        */
++      if ((!oldCD) || ((oldCD->cd_Rom.er_Manufacturer == 0x0e3b) && (oldCD->cd_Rom.er_Product == 0xc8)))
++      {
++        if (cd = (*FCD_ptr)(oldCD, 0x0e3b, 0xc8, ExpansionBase)) return cd;
++        if (oldCD) return NULL;                    /* FireStorms done; a mixed system is not expected */
++        return ((*FCD_ptr)(NULL, 0xAD47, 1, ExpansionBase));
++      }
++      return ((*FCD_ptr)(oldCD, 0xAD47, 1, ExpansionBase));
+     }
+     return ((*FCD_ptr)(oldCD, man, prod, ExpansionBase));
+ }
+@@ -2879,64 +3034,159 @@
+     return 0;
+ }
+ 
+-__entry ULONG PciFindCard(__reg("d0") UWORD card, __reg("d1") UWORD deviceID, __reg("d2") UBYTE index)
++/* One PciDevice per board, kept, so a pointer from FindPciDevice stays  */
++/* valid (4.7 had one static structure that every call overwrote).       */
++
++#define MAXFAKEDEV 16
++
++struct FakeDev
++{
++    PCIBoard *fd_Board;
++    struct PciDevice fd_Dev;
++};
++
++static struct FakeDev fakeDevs[MAXFAKEDEV];
++
++/* Mediator DevFunc: bits 0-2 function, 3-7 device (slot); the bus number */
++/* goes in bits 8-15 (0 for the slots on the Prometheus itself).          */
++
++static UWORD BoardDevFunc(PCIBoard *board)
++{
++    return (UWORD)(((PrmTag(board, PRM_BusNumber) & 0xFF) << 8) |
++                   ((PrmTag(board, PRM_SlotNumber) & 0x1F) << 3) |
++                    (PrmTag(board, PRM_FunctionNumber) & 0x07));
++}
++
++static PCIBoard *DevFuncBoard(UWORD devfunc)
++{
++    PCIBoard *board = NULL;
++
++    while (board = FindBoardTagList(myBase, board, NULL))
++    {
++        if (BoardDevFunc(board) == devfunc) return board;
++    }
++    return NULL;
++}
++
++static PCIBoard *DeviceBoard(struct PciDevice *pd)
++{
++    WORD i;
++
++    for (i = 0; i < MAXFAKEDEV; i++)
++    {
++        if (fakeDevs[i].fd_Board && (&fakeDevs[i].fd_Dev == pd)) return fakeDevs[i].fd_Board;
++    }
++    return NULL;
++}
++
++/* fill (or refill) the PciDevice of a board */
++
++static struct PciDevice *BoardDevice(PCIBoard *board)
++{
++    struct PciDevice *pd;
++    UWORD devfunc;
++    WORD i;
++
++    for (i = 0; i < MAXFAKEDEV; i++)
++    {
++        if (fakeDevs[i].fd_Board == board) break;
++    }
++    if (i == MAXFAKEDEV)
++    {
++        for (i = 0; i < MAXFAKEDEV; i++)
++        {
++            if (!fakeDevs[i].fd_Board) break;
++        }
++        if (i == MAXFAKEDEV) return NULL;
++        fakeDevs[i].fd_Board = board;
++    }
++    pd = &fakeDevs[i].fd_Dev;
++    devfunc = BoardDevFunc(board);
++
++    /* Read the tags by name. Their position in the list depends on */
++    /* the card (bridge or not, ROM or not).                         */
++    pd->pd_Node.ln_Pri          = (BYTE)(devfunc & 0xFF);   /* mediatorpci.h: ln_Pri = DevFuncNumber */
++    pd->pd_DevFunc              = devfunc;
++    pd->pd_VendorID             = PrmTag(board, PRM_Vendor);
++    pd->pd_DeviceID             = PrmTag(board, PRM_Device);
++    pd->pd_ClassCode            = (PrmTag(board, PRM_Class) << 16) | (PrmTag(board, PRM_SubClass) << 8) | PrmTag(board, PRM_Interface);
++    pd->pd_RevisionID           = PrmTag(board, PRM_Revision);
++    pd->pd_InterruptPin         = ReadConfigByte(myBase, board, 0x3D);
++    pd->pd_SubsystemVendorID    = PrmTag(board, PRM_SubsysVendor);
++    pd->pd_SubsystemID          = PrmTag(board, PRM_SubsysID);
++    pd->pd_ABaseAddress0        = PrmTag(board, PRM_MemoryAddr0);
++    pd->pd_Size0                = -(PrmTag(board, PRM_MemorySize0));
++    pd->pd_ABaseAddress1        = PrmTag(board, PRM_MemoryAddr1);
++    pd->pd_Size1                = -(PrmTag(board, PRM_MemorySize1));
++    pd->pd_ABaseAddress2        = PrmTag(board, PRM_MemoryAddr2);
++    pd->pd_Size2                = -(PrmTag(board, PRM_MemorySize2));
++    pd->pd_ABaseAddress3        = PrmTag(board, PRM_MemoryAddr3);
++    pd->pd_Size3                = -(PrmTag(board, PRM_MemorySize3));
++    pd->pd_ABaseAddress4        = PrmTag(board, PRM_MemoryAddr4);
++    pd->pd_Size4                = -(PrmTag(board, PRM_MemorySize4));
++    pd->pd_ABaseAddress5        = PrmTag(board, PRM_MemoryAddr5);
++    pd->pd_Size5                = -(PrmTag(board, PRM_MemorySize5));
++    pd->pd_ARomBaseAddress      = PrmTag(board, PRM_ROM_Address);
++    pd->pd_RomSize              = -(PrmTag(board, PRM_ROM_Size));
++
++    return pd;
++}
++
++/* FindPciDevice: the index-th board (0 = first) with this vendor and device */
++
++__entry ULONG PciFindCard(__reg("d0") UWORD card, __reg("d1") UWORD deviceID, __reg("d2") UWORD index)
+ {
+     PCIBoard *prmboard = NULL;
+ 
+     struct TagItem brdTags[] =
+     {
+-        PRM_Vendor, card,
+-        PRM_Device, deviceID,
++        PRM_Vendor, 0,
++        PRM_Device, 0,
+         TAG_DONE
+     };
+ 
+-    if (prmboard = FindBoardTagList (myBase, NULL, (struct TagItem*)&brdTags))
+-    {
+-        /* Read the tags by name. Their position in the list depends on */
+-        /* the card (bridge or not, ROM or not), so fixed indexes gave   */
+-        /* wrong values, e.g. for the ROM of cards without a ROM.        */
+-        fakeDevice.pd_VendorID          = card;
+-        fakeDevice.pd_DeviceID          = deviceID;
+-        fakeDevice.pd_ClassCode         = PrmTag(prmboard, PRM_Class);
+-        fakeDevice.pd_RevisionID        = PrmTag(prmboard, PRM_Revision);
+-        fakeDevice.pd_InterruptPin      = 0;
+-        fakeDevice.pd_SubsystemVendorID = 0;
+-        fakeDevice.pd_SubsystemID       = 0;
+-        fakeDevice.pd_ABaseAddress0     = PrmTag(prmboard, PRM_MemoryAddr0);
+-        fakeDevice.pd_Size0             = -(PrmTag(prmboard, PRM_MemorySize0));
+-        fakeDevice.pd_ABaseAddress1     = PrmTag(prmboard, PRM_MemoryAddr1);
+-        fakeDevice.pd_Size1             = -(PrmTag(prmboard, PRM_MemorySize1));
+-        fakeDevice.pd_ABaseAddress2     = PrmTag(prmboard, PRM_MemoryAddr2);
+-        fakeDevice.pd_Size2             = -(PrmTag(prmboard, PRM_MemorySize2));
+-        fakeDevice.pd_ABaseAddress3     = PrmTag(prmboard, PRM_MemoryAddr3);
+-        fakeDevice.pd_Size3             = -(PrmTag(prmboard, PRM_MemorySize3));
+-        fakeDevice.pd_ABaseAddress4     = PrmTag(prmboard, PRM_MemoryAddr4);
+-        fakeDevice.pd_Size4             = -(PrmTag(prmboard, PRM_MemorySize4));
+-        fakeDevice.pd_ABaseAddress5     = PrmTag(prmboard, PRM_MemoryAddr5);
+-        fakeDevice.pd_Size5             = -(PrmTag(prmboard, PRM_MemorySize5));
+-        fakeDevice.pd_ARomBaseAddress   = PrmTag(prmboard, PRM_ROM_Address);
+-        fakeDevice.pd_RomSize           = -(PrmTag(prmboard, PRM_ROM_Size));
++    brdTags[0].ti_Data = card;
++    brdTags[1].ti_Data = deviceID;
+ 
+-        return (ULONG)&fakeDevice;
++    while (prmboard = FindBoardTagList(myBase, prmboard, (struct TagItem*)&brdTags))
++    {
++        if (!index) return (ULONG)BoardDevice(prmboard);
++        index--;
+     }
+-
+     return 0;
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciFindCardbyClass(void) //class d0 - index d1
++/* FindPciClassCode: the index-th board with this 24-bit class code */
++
++__entry ULONG PciFindCardbyClass(__reg("d0") ULONG classcode, __reg("d1") UBYTE index)
+ {
+-    illegal();
+-    return 2; //struct pcidevice
++    PCIBoard *board = NULL;
++    ULONG code;
++
++    while (board = FindBoardTagList(myBase, board, NULL))
++    {
++        code = (PrmTag(board, PRM_Class) << 16) | (PrmTag(board, PRM_SubClass) << 8) | PrmTag(board, PRM_Interface);
++        if (code == (classcode & 0x00FFFFFF))
++        {
++            if (!index) return (ULONG)BoardDevice(board);
++            index--;
++        }
++    }
++    return 0;
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciFindCardbyNumber(void) //DevFunc d0
++/* FindPciDevFunc */
++
++__entry ULONG PciFindCardbyNumber(__reg("d0") UWORD devfunc)
+ {
+-    illegal();
+-    return 3; //struct pcidevice
++    PCIBoard *board;
++
++    if (board = DevFuncBoard(devfunc)) return (ULONG)BoardDevice(board);
++    return 0;
+ }
+ 
+ //--------------------------------------------------------------------------------
+@@ -2999,50 +3249,65 @@
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigReadByte(void) //devfunc d0 register d1
++/* Config space by DevFunc. Values in host order, as Prm_ReadConfigXxx. A  */
++/* DevFunc without a board reads as all ones, like an empty PCI slot.      */
++
++__entry UBYTE PciConfigReadByte(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset)
+ {
+-    illegal();
+-    return 11; //ubyte
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (!board) return 0xFF;
++    return ReadConfigByte(myBase, board, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigReadWord(void) //devfunc d0 register d1
++__entry UWORD PciConfigReadWord(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset)
+ {
+-    illegal();
+-    return 12; //uword
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (!board) return 0xFFFF;
++    return ReadConfigWord(myBase, board, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigReadLong(void) //devfunc d0 register d1
++__entry ULONG PciConfigReadLong(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset)
+ {
+-    illegal();
+-    return 13; //ulong
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (!board) return 0xFFFFFFFF;
++    return ReadConfigLong(myBase, board, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigWriteByte(void) //devfunc d0 register d1 data d2
++__entry void PciConfigWriteByte(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset, __reg("d2") UBYTE data)
+ {
+-    illegal();
+-    return 14;  //void
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (board) WriteConfigByte(myBase, board, data, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigWriteWord(void) //devfunc d0 register d1 data d2
++__entry void PciConfigWriteWord(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset, __reg("d2") UWORD data)
+ {
+-    illegal();
+-    return 15; //void
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (board) WriteConfigWord(myBase, board, data, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciConfigWriteLong(void) //devfunc d0 register d1 data d2
++/* The SDK inline declares the data of WriteConfigurationLong as UBYTE; */
++/* the whole of d2 is taken here.                                        */
++
++__entry void PciConfigWriteLong(__reg("d0") UWORD devfunc, __reg("d1") UBYTE offset, __reg("d2") ULONG data)
+ {
+-    illegal();
+-    return 16; //void
++    PCIBoard *board = DevFuncBoard(devfunc);
++
++    if (board) WriteConfigLong(myBase, board, data, offset);
+ }
+ 
+ //--------------------------------------------------------------------------------
+@@ -3079,18 +3344,31 @@
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciAllocBAR(void) //size d0 - BAR d1 - pcidevice a0
++/* AllocPCIBAR: Size is a BAR size mask as read back from the card, in PCI */
++/* byte order (powerpc.library passes e.g. 0xF0 for 256 MB and converts it */
++/* with -(swap32(size)) for Prm_AllocPCIAddressSpace). Returns the Amiga   */
++/* address of the range, as Prm_AllocPCIAddressSpace, or 0.                */
++
++__entry ULONG PciAllocBAR(__reg("d0") ULONG size, __reg("d1") ULONG bar, __reg("a0") struct PciDevice *pcidev)
+ {
+-    illegal();
+-    return 21; //ulong
++    PCIBoard *board = DeviceBoard(pcidev);
++    ULONG addr;
++
++    if (!board) return 0;
++    addr = (ULONG)AllocPCIAddressSpace(myBase, board, -(swapl(size)), bar);
++    BoardDevice(board);                               /* refresh its addresses */
++    return addr;
+ }
+ 
+ //--------------------------------------------------------------------------------
+ 
+-__entry ULONG PciFreeBAR(void) //BAR d0 - pcidevice a0
++__entry void PciFreeBAR(__reg("d0") ULONG bar, __reg("a0") struct PciDevice *pcidev)
+ {
+-    illegal();
+-    return 22; //void
++    PCIBoard *board = DeviceBoard(pcidev);
++
++    if (!board) return;
++    FreePCIAddressSpace(myBase, board, bar);
++    BoardDevice(board);
+ }
+ 
+ //--------------------------------------------------------------------------------

@@ -1,0 +1,29 @@
+/* Library Vector Offsets for cybergraphics.library */
+
+#define LVOLock						-7*6
+#define LVOUnlock						-8*6
+#define LVOIsCyberModeID			-9*6
+#define LVOBestCModeIDTagList		-10*6
+#define LVOCModeRequestTagList	-11*6
+#define LVOAllocCModeListTagList	-12*6
+#define LVOFreeCModeList			-13*6
+#define LVOScalePixelArray			-15*6
+#define LVOGetCyberMapAttr			-16*6
+#define LVOGetCyberIDAttr			-17*6
+#define LVOReadRGBPixel				-18*6
+#define LVOWriteRGBPixel			-19*6
+#define LVOReadPixelArray			-20*6
+#define LVOWritePixelArray			-21*6
+#define LVOMovePixelArray			-22*6
+#define LVOSwapPixelArray			-23*6
+#define LVOInvertPixelArray		-24*6
+#define LVOFillPixelArray			-25*6
+#define LVODoCDrawMethodTagList	-26*6
+#define LVOCVideoCtrlTagList		-27*6
+#define LVOLockBitMapTagList		-28*6
+#define LVOUnLockBitMap				-29*6
+#define LVOUnLockBitMapTagList	-30*6
+#define LVOExtractColor				-31*6
+#define LVOWriteLUTPixelArray		-33*6
+#define LVOWritePixelArrayAlpha	-36*6
+#define LVOBltTemplateAlpha		-37*6
