@@ -4,13 +4,13 @@ Components for the Prometheus PCI bridge with the FireStorm firmware.
 
 | Folder | What | Version |
 |---|---|---|
-| `promlib48/` | `prometheus.library`, the PCI bridge library | 4.8 |
-| `PrometheusCard-prmfirst/` | `Picasso96/Prometheus.card`, the card driver for graphics cards on the bridge (Voodoo, ViRGE, Permedia2), with the DMA memory functions used by `Prm_AllocDMABuffer` | 8.0 |
+| `prometheus.library/` | `prometheus.library`, the PCI bridge library | 4.8 |
+| `Prometheus.card/` | `Picasso96/Prometheus.card`, the card driver for graphics cards on the bridge (Voodoo, ViRGE, Permedia2), with the DMA memory functions used by `Prm_AllocDMABuffer` | 8.0 |
 | `ne2000/` | `prm-rtl8029.device`, the SANA-II driver for RTL8029 (NE2000) network cards | see `ne2000/release_notes` |
 
 Built binaries are included next to the sources:
-`promlib48/prometheus.library` (plus `.nopci`, `.nopf` and `.trace` variants),
-`PrometheusCard-prmfirst/bin/vbcc-classic/Prometheus.card` and
+`prometheus.library/prometheus.library` (plus `.nopci`, `.nopf` and `.trace` variants),
+`Prometheus.card/bin/vbcc-classic/Prometheus.card` and
 `ne2000/prm-rtl8029.device`.
 
 ## prometheus.library 4.8
@@ -29,6 +29,6 @@ Changes since 7.603:
 - new `AddDMAMemory(memory, size)` (LVO -54): another card driver can
   hand over part of its video memory as the DMA area. Open the card with
   version 8 to use it. Caller headers (proto/inline, no clib) are in
-  `PrometheusCard-prmfirst/include/`.
+  `Prometheus.card/include/`.
 
 Built with vbcc (`vc +aos68k -cpu=68020 -cpp-comments -c99 -nostdlib -O2`).
