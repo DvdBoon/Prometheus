@@ -18,6 +18,18 @@ Built binaries are included next to the sources:
 `driver_2.c` is the library; `driver_2_47_to_48.diff` shows the changes
 from 4.7.
 
+Build with GNU make and vbcc in `PromLib/`:
+
+    make          prometheus.library
+    make debug    prometheus.library.debug (-DDEBUG)
+    make clean
+
+The debug build prints its `D(...)` messages to the serial port, through
+exec's `RawPutChar`. The makefile's flags are the ones the included 4.8
+binary was built with. The include folders default to the Amiga assigns
+`vincludeos3:` and `include_h:`; on a PC cross setup pass them, e.g.
+`make VINC=C:/amiga-dev/targets/m68k-amigaos/include NDK=C:/amiga-dev/targets/m68k-amigaos/ndk/include_h RM="rm -f"`.
+
 ## Prometheus.card 8.0
 
 Changes since 7.603:
