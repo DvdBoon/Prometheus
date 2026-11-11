@@ -432,7 +432,56 @@ extern struct Library *SysBase;
 #include "prmtrace.c"
 #elif defined(DEBUG)
 #define D(x) x
-#define CARDDELAY 100000
+
+/* Debug build only: the delay before each card is probed (QueryCard) can
+ * be set with ENV:Prometheus/CardDelay, in microseconds, as ASCII text:
+ * decimal ("100000") or hexadecimal with a 0x or $ prefix ("0x186A0").
+ * Read once in LibInit; unset, empty or not a number = 100000, as in the
+ * normal build. */
+#include <dos/var.h>
+#include <proto/dos.h>
+
+ULONG CardDelay = 100000;
+#define CARDDELAY CardDelay
+
+void kprintf(STRPTR format, ...);   /* defined below */
+
+void ReadCardDelay(struct Library *SysBase)
+{
+    struct Library *DOSBase;
+    struct Task *me = FindTask(NULL);
+    UBYTE buf[16];
+    LONG len;
+
+    /* dos.library only from a process (ramlib, or a program opening the
+     * library); a plain task keeps the default */
+    if (!me || me->tc_Node.ln_Type != NT_PROCESS) return;
+    if (!(DOSBase = OpenLibrary("dos.library", 36))) return;
+    len = GetVar("Prometheus/CardDelay", buf, sizeof(buf), GVF_GLOBAL_ONLY);
+    if (len > 0)
+    {
+        UBYTE *p = buf;
+        ULONG v = 0, base = 10;
+        BOOL ok = FALSE;
+
+        while (*p == ' ' || *p == '\t') p++;
+        if (p[0] == '$') { base = 16; p++; }
+        else if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { base = 16; p += 2; }
+        for (;; p++)
+        {
+            ULONG d;
+            if (*p >= '0' && *p <= '9') d = *p - '0';
+            else if (base == 16 && *p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+            else if (base == 16 && *p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+            else break;
+            v = v * base + d;
+            ok = TRUE;
+        }
+        if (ok) CardDelay = v;
+    }
+    CloseLibrary(DOSBase);
+    D(kprintf("[LibInit] CardDelay %ld (0x%lx)\n", CardDelay, CardDelay));
+}
 
 APTR __DRawPutChar(__reg("a6") void *, __reg("d0") UBYTE MyChar)="\tjsr\t-516(a6)";
 
@@ -712,7 +761,7 @@ void QueryCard (struct PrometheusBase *pb, struct PCIBus *pcibus, volatile struc
 
   D(kprintf("[QueryCard] 0x%lx\n", conf));
 
-  PrmTimeDelay(pb, 0, 0, CARDDELAY); //Seems like bridges give trouble without this.
+  PrmTimeDelay(pb, 0, CARDDELAY / 1000000, CARDDELAY % 1000000); //Seems like bridges give trouble without this.
 
   if (conf->pc_Vendor != 0xFFFF)
   {
@@ -1490,6 +1539,10 @@ struct PrometheusBase *LibInit(__reg("d0") struct PrometheusBase *pb, __reg("a0"
   pb->pb_Cards.mlh_Tail = NULL;
   pb->pb_Cards.mlh_TailPred = (struct MinNode*)&pb->pb_Cards.mlh_Head;
   pb->pb_BridgeCnt = 0;
+
+#ifdef DEBUG
+  ReadCardDelay((struct Library *)SysBase);   /* ENV:Prometheus/CardDelay, debug build only */
+#endif
 
   if (pb->pb_MemPool = CreatePool(MEMF_ANY | MEMF_CLEAR, 4 * sizeof(PCIBoard), 4 * sizeof(PCIBoard)))
    {
