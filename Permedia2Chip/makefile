@@ -1,4 +1,4 @@
-# 3DLabsPermedia2.chip 7.17 - bebbo amiga-gcc
+# 3DLabsPermedia2.chip 7.18 - bebbo amiga-gcc
 # make            -> 3DLabsPermedia2.chip
 # Needs: m68k-amigaos-gcc in PATH (D:\amiga-gcc), NDK headers from amiga-gcc.
 

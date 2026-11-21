@@ -77,7 +77,7 @@ void WaitBlitter(__REGA0(struct BoardInfo *bi))
 		;
 }
 
-void FillRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y),
+static void FillRectEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y),
 		__REGD2(WORD w), __REGD3(WORD h), __REGD4(ULONG pen), __REGD5(UBYTE mask), __REGD7(RGBFTYPE fmt))
 {
 	UBYTE *RegBase;
@@ -120,7 +120,7 @@ void FillRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __R
 	REG(Render) = render;
 }
 
-void InvertRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y),
+static void InvertRectEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y),
 		__REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask), __REGD7(RGBFTYPE fmt))
 {
 	UBYTE *RegBase;
@@ -152,7 +152,7 @@ void InvertRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), _
 	REG(Render) = 0x6000c0;
 }
 
-void BlitRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD sx), __REGD1(WORD sy),
+static void BlitRectEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD sx), __REGD1(WORD sy),
 		__REGD2(WORD dx), __REGD3(WORD dy), __REGD4(WORD w), __REGD5(WORD h), __REGD6(UBYTE mask),
 		__REGD7(RGBFTYPE fmt))
 {
@@ -201,7 +201,7 @@ void BlitRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __R
 	REG(Render) = render;
 }
 
-void BlitRectNoMaskComplete(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *src), __REGA2(struct RenderInfo *dst),
+static void BlitRectNoMaskCompleteEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *src), __REGA2(struct RenderInfo *dst),
 		__REGD0(WORD sx), __REGD1(WORD sy), __REGD2(WORD dx), __REGD3(WORD dy), __REGD4(WORD w), __REGD5(WORD h),
 		__REGD6(UBYTE minterm), __REGD7(RGBFTYPE fmt))
 {
@@ -237,8 +237,8 @@ void BlitRectNoMaskComplete(__REGA0(struct BoardInfo *bi), __REGA1(struct Render
 			if (minterm != 0xc)
 				mode |= FBREAD_DEST;
 		}
-		REG(FBReadMode) = mode;
 		WAITFIFO(11);
+		REG(FBReadMode) = mode;		/* 7.17 wrote this before the FIFO wait */
 		REG(FBReadPixel) = ReadPixelValues[fmt];
 		REG(RectangleOrigin) = MakeLong(0, 0);
 		REG(RectangleSize) = MakeLong(1, w);
@@ -302,7 +302,7 @@ void BlitRectNoMaskComplete(__REGA0(struct BoardInfo *bi), __REGA1(struct Render
 	}
 }
 
-void DrawLine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Line *line),
+static void DrawLineEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Line *line),
 		__REGD0(UBYTE mask), __REGD7(RGBFTYPE fmt))
 {
 	UBYTE *RegBase;
@@ -431,7 +431,7 @@ void DrawLine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __R
 	REG(ContinueNewLine) = count + 1;
 }
 
-void BlitPattern(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Pattern *pat),
+static void BlitPatternEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Pattern *pat),
 		__REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask),
 		__REGD7(RGBFTYPE fmt))
 {
@@ -561,7 +561,7 @@ void BlitPattern(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), 
 	REG(Render) = render;
 }
 
-void BlitTemplate(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Template *tmpl),
+static void BlitTemplateEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Template *tmpl),
 		__REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask),
 		__REGD7(RGBFTYPE fmt))
 {
@@ -588,7 +588,7 @@ void BlitTemplate(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri),
 	mem = tmpl->Memory;
 	render = 0x6008c0;
 	rastmode = 0x201;
-	WAITFIFO(14);
+	WAITFIFO(16);			/* 7.17 waited for 14 but writes up to 16 */
 	REG(FBReadPixel) = ReadPixelValues[fmt];
 	REG(FBWindowBase) = WindowBase(bi, ri, pw);
 	if (fmt == RGBFB_CLUT && mask != 0xff) {
@@ -654,7 +654,7 @@ void BlitTemplate(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri),
 	}
 }
 
-void BlitPlanar2Chunky(__REGA0(struct BoardInfo *bi), __REGA1(struct BitMap *bm), __REGA2(struct RenderInfo *ri),
+static void BlitPlanar2ChunkyEngine(__REGA0(struct BoardInfo *bi), __REGA1(struct BitMap *bm), __REGA2(struct RenderInfo *ri),
 		__REGD0(SHORT sx), __REGD1(SHORT sy), __REGD2(SHORT dx), __REGD3(SHORT dy), __REGD4(SHORT w),
 		__REGD5(SHORT h), __REGD6(UBYTE minterm), __REGD7(UBYTE mask))
 {
@@ -724,6 +724,170 @@ void BlitPlanar2Chunky(__REGA0(struct BoardInfo *bi), __REGA1(struct BitMap *bm)
 		} while (m);
 		dstoff += (WORD)ri->BytesPerRow;
 		srcoff += bm->BytesPerRow;
+	}
+}
+
+/*
+ * 7.18: the 2D functions share the graphics processor with Warp3D.
+ * Warp3D holds the public semaphore P2_ENGINE_LOCK while it has the hardware
+ * locked. A 2D call that finds it taken draws with the CPU through the
+ * Picasso96 default function instead of touching the 3D state, so 2D never
+ * waits for 3D and cannot deadlock with it.
+ */
+/*
+ * Warp3D no longer restores the chip registers when it unlocks (it relies on
+ * this driver), so the first engine blit after Warp3D used the chip puts back
+ * the 2D state that InitChip set up. Registers InitChip never writes get their reset value.
+ * The blit functions then write their own registers on top.
+ */
+static void ReloadEngineState(struct BoardInfo *bi)
+{
+	UBYTE *RegBase = bi->RegisterBase;
+
+	WAITFIFO(17);
+	REG(RasterizerMode) = 0;
+	REG(ScissorMode) = 0;
+	REG(AreaStippleMode) = 0;
+	REG(WindowOrigin) = 0;
+	REG(TextureAddressMode) = 0;
+	REG(TextureDataFormat) = 0;
+	REG(TextureReadMode) = 0;
+	REG(TexelLUTMode) = 0;
+	REG(TextureColorMode) = 0;
+	REG(FogMode) = 0;
+	REG(ColorDDAMode) = 0;
+	REG(AlphaBlendMode) = 0;
+	REG(DitherMode) = 0;
+	REG(FBSoftwareWriteMask) = 0xffffffff;
+	REG(LogicalOpMode) = 0;
+	REG(LBReadMode) = 0;
+	REG(LBReadFormat) = 0;
+	WAITFIFO(17);
+	REG(LBSourceOffset) = 0;
+	REG(LBWindowBase) = 0;
+	REG(LBWriteMode) = 0;
+	REG(LBWriteFormat) = 0;
+	REG(Window) = 0x40000;
+	REG(StencilMode) = 0;
+	REG(DepthMode) = 0;
+	REG(FBReadMode) = 0;
+	REG(FBSourceOffset) = 0;
+	REG(FBPixelOffset) = 0;
+	REG(FBWindowBase) = 0;
+	REG(FBWriteMode) = 1;
+	REG(FBHardwareWriteMask) = 0xffffffff;
+	REG(FilterMode) = 0;
+	REG(StatisticMode) = 0;
+	REG(YUVMode) = 0;
+	REG(DeltaMode) = 0;
+}
+
+static inline BOOL LockEngine(struct BoardInfo *bi)
+{
+	struct SignalSemaphore *sem = (struct SignalSemaphore *)bi->EngineLock;
+
+	if (sem == NULL)
+		return TRUE;
+	/* AttemptSemaphore succeeds for the owner: the task that holds the
+	   Warp3D lock must not draw on the engine in the middle of a frame */
+	if (sem->ss_Owner == FindTask(NULL))
+		return FALSE;
+	if (!AttemptSemaphore(sem))
+		return FALSE;
+	/* reload only after Warp3D used the chip (no flag: always) */
+	if (bi->EngineDirty == 0 || *(ULONG *)bi->EngineDirty) {
+		ReloadEngineState(bi);
+		if (bi->EngineDirty)
+			*(ULONG *)bi->EngineDirty = 0;
+	}
+	return TRUE;
+}
+
+static inline void UnlockEngine(struct BoardInfo *bi)
+{
+	struct SignalSemaphore *sem = (struct SignalSemaphore *)bi->EngineLock;
+
+	if (sem)
+		ReleaseSemaphore(sem);
+}
+
+void FillRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(ULONG pen), __REGD5(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		FillRectEngine(bi, ri, x, y, w, h, pen, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->FillRectDefault(bi, ri, x, y, w, h, pen, mask, fmt);
+	}
+}
+
+void InvertRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		InvertRectEngine(bi, ri, x, y, w, h, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->InvertRectDefault(bi, ri, x, y, w, h, mask, fmt);
+	}
+}
+
+void BlitRect(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGD0(WORD sx), __REGD1(WORD sy), __REGD2(WORD dx), __REGD3(WORD dy), __REGD4(WORD w), __REGD5(WORD h), __REGD6(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		BlitRectEngine(bi, ri, sx, sy, dx, dy, w, h, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->BlitRectDefault(bi, ri, sx, sy, dx, dy, w, h, mask, fmt);
+	}
+}
+
+void BlitRectNoMaskComplete(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *src), __REGA2(struct RenderInfo *dst), __REGD0(WORD sx), __REGD1(WORD sy), __REGD2(WORD dx), __REGD3(WORD dy), __REGD4(WORD w), __REGD5(WORD h), __REGD6(UBYTE minterm), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		BlitRectNoMaskCompleteEngine(bi, src, dst, sx, sy, dx, dy, w, h, minterm, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->BlitRectNoMaskCompleteDefault(bi, src, dst, sx, sy, dx, dy, w, h, minterm, fmt);
+	}
+}
+
+void DrawLine(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Line *line), __REGD0(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		DrawLineEngine(bi, ri, line, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->DrawLineDefault(bi, ri, line, mask, fmt);
+	}
+}
+
+void BlitPattern(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Pattern *pat), __REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		BlitPatternEngine(bi, ri, pat, x, y, w, h, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->BlitPatternDefault(bi, ri, pat, x, y, w, h, mask, fmt);
+	}
+}
+
+void BlitTemplate(__REGA0(struct BoardInfo *bi), __REGA1(struct RenderInfo *ri), __REGA2(struct Template *tmpl), __REGD0(WORD x), __REGD1(WORD y), __REGD2(WORD w), __REGD3(WORD h), __REGD4(UBYTE mask), __REGD7(RGBFTYPE fmt))
+{
+	if (LockEngine(bi)) {
+		BlitTemplateEngine(bi, ri, tmpl, x, y, w, h, mask, fmt);
+		UnlockEngine(bi);
+	} else {
+		bi->BlitTemplateDefault(bi, ri, tmpl, x, y, w, h, mask, fmt);
+	}
+}
+
+void BlitPlanar2Chunky(__REGA0(struct BoardInfo *bi), __REGA1(struct BitMap *bm), __REGA2(struct RenderInfo *ri), __REGD0(SHORT sx), __REGD1(SHORT sy), __REGD2(SHORT dx), __REGD3(SHORT dy), __REGD4(SHORT w), __REGD5(SHORT h), __REGD6(UBYTE minterm), __REGD7(UBYTE mask))
+{
+	if (LockEngine(bi)) {
+		BlitPlanar2ChunkyEngine(bi, bm, ri, sx, sy, dx, dy, w, h, minterm, mask);
+		UnlockEngine(bi);
+	} else {
+		bi->BlitPlanar2ChunkyDefault(bi, bm, ri, sx, sy, dx, dy, w, h, minterm, mask);
 	}
 }
 

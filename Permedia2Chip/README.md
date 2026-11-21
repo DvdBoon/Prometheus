@@ -13,6 +13,33 @@ functions, return values, BoardInfo and struct memory, and register
 preservation. Not tested: inputs that read past the tables in the original
 too (RGB format 21 or higher, minterm above 15), which no caller passes.
 
+## 7.18 (20.11.26)
+
+Built with amiga-gcc; the tested binary has md5 8c3c1286fb2c3c7773651283d1dccf91.
+
+1. **Engine lock shared with Warp3D.** InitChip creates a public
+   SignalSemaphore "3DLabsPermedia2.chip engine" (never removed). Every
+   hardware blit does AttemptSemaphore. If Warp3D holds it, or the calling
+   task is the one holding it, the blit is drawn by the CPU (the Picasso96
+   *Default function), so 2D never touches the 3D state and never waits.
+   Memory layout, agreed with the Warp3D driver:
+   offset 0 `struct SignalSemaphore`, offset 46 `ULONG dirty3D`,
+   offset 50 the name. Warp3D sets dirty3D to 1 before ReleaseSemaphore;
+   the next blit reloads the 34 graphics-core registers it relies on to
+   their InitChip values and clears the flag.
+2. **Sync polarity from the screen mode** (GMF_HPOLARITY/GMF_VPOLARITY).
+   7.16 and 7.17 tested a BoardInfo flag (BIF_CACHEMODECHANGE) instead.
+   The chip always outputs +HSync/+VSync, because the RAMDAC hardware
+   cursor needs +VSync, and the RAMDAC MiscControl register inverts them
+   for the monitor (as Linux pm2fb does).
+3. **Memory sizing** no longer writes one long past the end of card
+   memory and no longer counts a failing megabyte as present.
+4. **Debug Alerts removed** from CalculateBytesPerRow and CalculateMemory.
+5. **FIFO waits:** BlitTemplate waited for 14 slots but writes up to 16;
+   BlitRectNoMaskComplete wrote FBReadMode before its FIFO wait.
+
+Register names fixed: 0x8678 is TexelLUTMode and 0x8690 is FogMode.
+
 ## Build
 
 amiga-gcc (bebbo), in this folder:

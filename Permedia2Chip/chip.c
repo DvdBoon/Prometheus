@@ -93,7 +93,7 @@ void SetGC(__REGA0(struct BoardInfo *bi), __REGA1(struct ModeInfo *mi), __REGD0(
 	BOOL off = (vc & 0x28) == 0;
 	LONG shift, mul;
 
-	WAITFIFO(11);
+	WAITFIFO(13);		/* 7.17: 11; 7.18 adds 2 RAMDAC writes for the sync inversion */
 	vc &= 0xfffeff83;
 
 	switch (mi->Depth) {
@@ -154,10 +154,18 @@ void SetGC(__REGA0(struct BoardInfo *bi), __REGA1(struct ModeInfo *mi), __REGD0(
 	REG(VsEnd) = vsend;
 	Serialize();
 
+	/*
+	 * Sync polarity from the mode: flag set = active low (negative).
+	 * 7.17 looked at bi->Flags (BIF_CACHEMODECHANGE) instead.
+	 * The RAMDAC hardware cursor needs +vsync to find the vertical retrace,
+	 * so the chip always outputs +hsync/+vsync and the RAMDAC inverts them
+	 * (MiscControl bit 2 = invert hsync, bit 3 = invert vsync, as Linux pm2fb).
+	 */
 	vc |= 0x28;
-	/* 7.17 tests bi->Flags here, not the ModeInfo sync polarity flags */
-	if (bi->Flags & BIF_CACHEMODECHANGE)
-		vc |= 0x10;
+	REG(RDPaletteWriteAddress) = RDI_MiscControl;
+	Serialize();
+	REG(RDIndexedData) = 2 | ((mi->Flags & GMF_HPOLARITY) ? 4 : 0) | ((mi->Flags & GMF_VPOLARITY) ? 8 : 0);
+	Serialize();
 	if (mi->Depth > 8)
 		vc |= 0x10000;
 	bi->CurrentVideoControl = vc;
@@ -180,12 +188,15 @@ UWORD EngineWidth(UWORD width)
 
 UWORD CalculateBytesPerRow(__REGA0(struct BoardInfo *bi), __REGD0(UWORD width), __REGD7(RGBFTYPE fmt))
 {
-	if ((LONG)fmt < RGBFB_MaxFormats && width <= 2048) {
+	if ((LONG)fmt >= RGBFB_MaxFormats)
+		fmt = RGBFB_CLUT;
+	if (width <= 2048) {
 		UWORD w = EngineWidth(width);
 		if (w)
 			return (UWORD)(w * PixelWidth[fmt]);
 	}
-	Alert(0x1d000002);
+	/* 7.17 raised a debug Alert here; the blitter falls back to the */
+	/* CPU for widths the engine cannot handle, so just return the size */
 	return (UWORD)(width * PixelWidth[fmt]);
 }
 
@@ -193,8 +204,9 @@ APTR CalculateMemory(__REGA0(struct BoardInfo *bi), __REGA1(APTR mem), __REGD7(R
 {
 	UBYTE *m = mem;
 
+	/* 7.17 raised a (deadend) debug Alert for addresses outside card memory */
 	if (m < bi->MemoryBase || m >= bi->MemoryBase + bi->MemorySize)
-		Alert(0x9d000001);
+		return mem;
 	if ((1UL << (fmt & 31)) & ((1 << RGBFB_R5G6B5) | (1 << RGBFB_R5G5B5)))
 		return bi->MemoryIOBase + (m - bi->MemoryBase);
 	return mem;
@@ -340,29 +352,72 @@ static ULONG validateMemoryClock(ULONG clock)
 	return clock;
 }
 
+/*
+ * Size the card memory in 1 MB steps up to bi->MemorySize (the aperture the
+ * card driver found). A step fails when the test long cannot be read back or
+ * when the write shows up at the start of memory (address wrap).
+ * 7.17 also wrote one long past the end of the aperture and counted the
+ * failing megabyte as present.
+ */
 static ULONG getAvailableMemory(struct BoardInfo *bi)
 {
 	volatile ULONG *base = (volatile ULONG *)bi->MemoryBase;
-	ULONG size = 0;
+	ULONG size;
 
 	*base = 0xa5a55a5a;
 	CacheClearU();
 	Serialize();
 	if (*base != 0xa5a55a5a)
 		return 0;
-	Serialize();
-	while (size < bi->MemorySize) {
-		volatile ULONG *p;
+	for (size = 0x100000; size < bi->MemorySize; size += 0x100000) {
+		volatile ULONG *p = (volatile ULONG *)(bi->MemoryBase + size);
 
-		size += 0x100000;
-		p = (volatile ULONG *)(bi->MemoryBase + size);
 		*p = 0x5a5aa5a5;
 		CacheClearU();
 		Serialize();
 		if (*p != 0x5a5aa5a5 || *base != 0xa5a55a5a)
 			break;
 	}
-	return size;
+	return size < bi->MemorySize ? size : bi->MemorySize;
+}
+
+/* find or create the public engine semaphore shared with Warp3D */
+/*
+ * Engine lock shared with Warp3D. Memory layout (agreed with the Warp3D driver):
+ *   offset  0: struct SignalSemaphore
+ *   offset 46: ULONG dirty3D  - Warp3D sets it to 1 before ReleaseSemaphore,
+ *                               the next 2D blit reloads its registers and clears it
+ *   offset 50: name "3DLabsPermedia2.chip engine"
+ * A semaphore left by an older 7.18 test build (name right after the semaphore,
+ * no flag) is still used, but then every blit reloads the registers.
+ */
+static void setupEngineLock(struct BoardInfo *bi)
+{
+	struct SignalSemaphore *sem;
+	ULONG *dirty = NULL;
+
+	Forbid();
+	sem = FindSemaphore(P2_ENGINE_LOCK);
+	if (sem == NULL) {
+		sem = AllocMem(sizeof(struct SignalSemaphore) + sizeof(ULONG) + sizeof(P2_ENGINE_LOCK), MEMF_PUBLIC | MEMF_CLEAR);
+		if (sem) {
+			char *name = (char *)(sem + 1) + sizeof(ULONG);
+			const char *s = P2_ENGINE_LOCK;
+
+			while ((*name++ = *s++) != 0)
+				;
+			sem->ss_Link.ln_Name = (char *)(sem + 1) + sizeof(ULONG);
+			sem->ss_Link.ln_Pri = 0;
+			AddSemaphore(sem);	/* never removed: Warp3D may hold a pointer to it */
+		}
+	}
+	if (sem && sem->ss_Link.ln_Name == (char *)(sem + 1) + sizeof(ULONG)) {
+		dirty = (ULONG *)(sem + 1);
+		*dirty = 0;		/* InitChip sets all registers below */
+	}
+	Permit();
+	bi->EngineLock = (ULONG)sem;
+	bi->EngineDirty = (ULONG)dirty;
 }
 
 extern void SetMemoryMode(void);
@@ -398,6 +453,7 @@ ULONG InitChip(__REGA0(struct BoardInfo *bi))
 	bi->SetInterrupt = SetInterrupt;
 
 	setupClocks(bi);
+	setupEngineLock(bi);
 	setupBlitter(bi);
 
 	bi->BitsPerCannon = 8;
@@ -475,13 +531,13 @@ ULONG InitChip(__REGA0(struct BoardInfo *bi))
 	Serialize();
 	REG(TextureColorMode) = 0;
 	Serialize();
-	REG(TextureDataFormat) = 0;
+	REG(TexelLUTMode) = 0;
 	Serialize();
 	REG(YUVMode) = 0;
 	Serialize();
 	REG(ColorDDAMode) = 0;
 	Serialize();
-	REG(TexelLUTMode) = 0;
+	REG(FogMode) = 0;
 	Serialize();
 	REG(AlphaBlendMode) = 0;
 	Serialize();

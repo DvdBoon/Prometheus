@@ -6,7 +6,7 @@ Components for the Prometheus PCI bridge with the FireStorm firmware.
 |---|---|---|
 | `PromLib/` | `prometheus.library`, the PCI bridge library | 4.8 |
 | `PrometheusCard/` | `Picasso96/Prometheus.card`, the card driver for graphics cards on the bridge (Voodoo, ViRGE, Permedia2), with the DMA memory functions used by `Prm_AllocDMABuffer` | 8.0 |
-| `Permedia2Chip/` | `Picasso96/3DLabsPermedia2.chip`, the Picasso96 chip driver for Permedia2 cards | 7.17 |
+| `Permedia2Chip/` | `Picasso96/3DLabsPermedia2.chip`, the Picasso96 chip driver for Permedia2 cards | 7.18 |
 | `ne2000/` | `prm-rtl8029.device`, the SANA-II driver for RTL8029 (NE2000) network cards | see `ne2000/release_notes` |
 
 Built binaries are included next to the sources:

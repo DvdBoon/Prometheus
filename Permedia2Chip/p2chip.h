@@ -13,6 +13,8 @@
 #include <exec/execbase.h>
 #include <graphics/gfx.h>
 #include <graphics/rastport.h>
+#include <exec/semaphores.h>
+#include <exec/memory.h>
 #pragma pack()
 
 #pragma pack(2)
@@ -105,6 +107,7 @@
 #define ContinueNewLine         0x8040
 #define BitMaskPattern          0x8068
 #define RasterizerMode          0x80a0
+#define ScreenSize              0x8198
 #define RectangleOrigin         0x80d0
 #define RectangleSize           0x80d8
 #define PackedDataLimits        0x8150
@@ -119,8 +122,9 @@
 #define Texel0                  0x8600
 #define TextureColorMode        0x8680
 #define TextureReadMode         0x8670
-#define TextureDataFormat       0x8678
-#define TexelLUTMode            0x8690
+#define TexelLUTMode            0x8678  /* 7.17 rebuild called this TextureDataFormat */
+#define FogMode                 0x8690  /* 7.17 rebuild called this TexelLUTMode */
+#define TextureDataFormat       0x8590
 #define ColorDDAMode            0x87e0
 #define ConstantColor           0x87e8
 #define AlphaBlendMode          0x8810
@@ -131,6 +135,7 @@
 #define LBReadFormat            0x8888
 #define LBSourceOffset          0x8890
 #define LBWindowBase            0x88b8
+#define LBWriteMode             0x88c0
 #define LBWriteFormat           0x88c8
 #define Window                  0x8980
 #define StencilMode             0x8988
@@ -148,6 +153,7 @@
 #define StatisticMode           0x8c08
 #define FBSourceDelta           0x8d88
 #define YUVMode                 0x8f00
+#define DeltaMode               0x9300
 
 /*--------------------------------------------------------------------------*/
 
@@ -159,6 +165,11 @@
 
 #define CurrentVideoControl     ChipData[0]
 #define SpriteActive            ChipData[1]
+#define EngineLock              ChipData[2]	/* struct SignalSemaphore * (7.18) */
+#define EngineDirty             ChipData[3]	/* ULONG * "3D used the chip" flag, or 0 (7.18) */
+
+/* public semaphore shared with Warp3D (7.18) */
+#define P2_ENGINE_LOCK          "3DLabsPermedia2.chip engine"
 
 static inline ULONG MakeLong(LONG hi, LONG lo)
 {
